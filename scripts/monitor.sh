@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# ============================================================
+# BraTS 训练实时监控
+# 用法: bash scripts/monitor.sh [刷新秒数]
+# ============================================================
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+LOG_DIR="${LOG_DIR:-./logs}"
+WORK_DIR="${WORK_DIR:-./work_dir}"
+STATE_DIR="${STATE_DIR:-./run_state}"
+REFRESH="${1:-10}"
+
+C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
+C_BLUE=$'\033[34m'; C_CYAN=$'\033[36m'; C_BOLD=$'\033[1m'; C_RST=$'\033[0m'
+
+trap 'tput cnorm; clear; exit 0' INT TERM
+tput civis  # 隐藏光标
+clear
+
+format_time() {
+    local sec=$1
+    if   [[ $sec -lt 60 ]];   then echo "${sec}s"
+    elif [[ $sec -lt 3600 ]]; then printf "%dm%02ds" $((sec/60)) $((sec%60))
+    else printf "%dh%02dm" $((sec/3600)) $((sec%3600/60))
+    fi
+}
+
+while true; do
+    tput cup 0 0
+
+    echo "${C_BOLD}${C_CYAN}╔══════════════════════════════════════════════════════════════════╗${C_RST}"
+    echo "${C_BOLD}${C_CYAN}║  BraTS2021 训练实时监控   $(date '+%Y-%m-%d %H:%M:%S')   刷新:${REFRESH}s   ║${C_RST}"
+    echo "${C_BOLD}${C_CYAN}╚══════════════════════════════════════════════════════════════════╝${C_RST}"
+    echo ""
+
+    # ---- GPU ----
+    echo "${C_BOLD}━━ GPU ━━${C_RST}"
+    nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw \
+        --format=csv,noheader,nounits 2>/dev/null | \
+    while IFS=',' read -r idx util mem_u mem_t temp pwr; do
+        printf "  GPU %s │ 利用率 ${C_GREEN}%3s%%${C_RST} │ 显存 ${C_YELLOW}%5s${C_RST}/%5s MB │ %s°C │ %.1fW\n" \
+            "$idx" "$util" "$mem_u" "$mem_t" "$temp" "$pwr"
+    done
+    echo ""
+
+    # ---- 内存 / 磁盘 ----
+    echo "${C_BOLD}━━ 系统资源 ━━${C_RST}"
+    free -h | awk 'NR==2{printf "  内存: 已用 %s / %s (可用 %s)\n", $3, $2, $7}'
+    df -h /root/autodl-tmp 2>/dev/null | awk 'NR==2{printf "  /root/autodl-tmp: %s / %s (%s)\n", $3, $2, $5}'
+    df -h . | awk 'NR==2{printf "  当前目录: %s / %s (%s)\n", $3, $2, $5}'
+    echo ""
+
+    # ---- 任务状态 ----
+    echo "${C_BOLD}━━ 任务状态 ━━${C_RST}"
+    if [[ -d "$STATE_DIR" ]]; then
+        n_done=0; n_run=0; n_fail=0
+        for f in "$STATE_DIR"/*.state; do
+            [[ -f "$f" ]] || continue
+            s=$(cut -d'|' -f1 "$f")
+            case "$s" in
+                done)    n_done=$((n_done+1)) ;;
+                running) n_run=$((n_run+1)) ;;
+                failed)  n_fail=$((n_fail+1)) ;;
+            esac
+        done
+        printf "  ${C_GREEN}完成: %d${C_RST}  │  ${C_YELLOW}运行中: %d${C_RST}  │  ${C_RED}失败: %d${C_RST}\n" \
+            "$n_done" "$n_run" "$n_fail"
+
+        # 显示运行中的任务
+        for f in "$STATE_DIR"/*.state; do
+            [[ -f "$f" ]] || continue
+            IFS='|' read -r s t0 _ < "$f"
+            if [[ "$s" == "running" ]]; then
+                elapsed=$(( $(date +%s) - t0 ))
+                printf "  ${C_YELLOW}▶${C_RST} $(basename "$f" .state) (已运行 $(format_time $elapsed))\n"
+            fi
+        done
+    else
+        echo "  (尚未启动任何任务)"
+    fi
+    echo ""
+
+    # ---- 训练进度 ----
+    echo "${C_BOLD}━━ 训练进度 ━━${C_RST}"
+    found=0
+    for log_file in "$LOG_DIR"/train_*.log; do
+        [[ -f "$log_file" ]] || continue
+        found=1
+        name=$(basename "$log_file" .log)
+
+        last_ep=$(grep -oE "Epoch [0-9]+/[0-9]+" "$log_file" 2>/dev/null | tail -n 1)
+        last_loss=$(grep -oE "loss=[0-9.]+" "$log_file" 2>/dev/null | tail -n 1)
+        last_dice=$(grep -oE "mean=[0-9.]+" "$log_file" 2>/dev/null | tail -n 1)
+        last_lr=$(grep -oE "lr=[0-9.e+-]+" "$log_file" 2>/dev/null | tail -n 1)
+
+        printf "  %-32s  %-14s  %-12s  %-14s  %s\n" \
+            "$name" "${last_ep:-—}" "${last_loss:-—}" "${last_lr:-—}" "${last_dice:-—}"
+    done
+    [[ $found -eq 0 ]] && echo "  (尚未开始训练)"
+    echo ""
+
+    # ---- 最新日志 ----
+    echo "${C_BOLD}━━ 最新日志 (run_all) ━━${C_RST}"
+    if [[ -f "$LOG_DIR/run_all.log" ]]; then
+        tail -n 5 "$LOG_DIR/run_all.log" | sed 's/^/  /'
+    fi
+    echo ""
+
+    echo "${C_BLUE}按 Ctrl+C 退出${C_RST}"
+
+    # 清屏到底
+    tput ed
+
+    sleep "$REFRESH"
+dones

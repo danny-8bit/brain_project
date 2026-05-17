@@ -1,0 +1,4 @@
+model: mednext
+lr: 1.0e-4
+batch_size: 1
+roi_size: [128, 128, 128]

@@ -1,0 +1,31 @@
+seed: 2024
+gpu: 0
+amp: true
+deep_supervision: true
+ema: true
+ema_decay: 0.999
+grad_clip: 1.0
+
+# 数据 (1TB RAM 优化)
+data_root: ./data/BraTS2021_TrainingData
+folds_json: ./data/folds.json
+num_folds: 5
+num_workers: 12          # ← autodl 一般 16 核左右，12 比较安全
+cache_rate: 1.0          # ← 全缓存，吃内存约 60~80GB
+
+# 训练
+roi_size: [128, 128, 128]
+batch_size: 2
+sw_batch_size: 4
+max_epochs: 800
+warmup_epochs: 20
+val_interval: 25
+lr: 3.0e-4
+weight_decay: 1.0e-5
+
+# SWA
+use_swa: true
+swa_start_ratio: 0.85
+swa_lr: 5.0e-5
+
+work_dir: ./work_dir

@@ -1,0 +1,7 @@
+model: swinunetr
+feature_size: 48
+use_checkpoint: true
+ssl_pretrained: ./pretrained/model_swinvit.pt
+lr: 1.0e-4
+batch_size: 2           # 之前是 1，现在改 2
+roi_size: [128, 128, 128]

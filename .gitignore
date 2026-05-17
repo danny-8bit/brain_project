@@ -1,0 +1,33 @@
+dataset.zip
+*.rar
+*.tar.gz
+data/
+logs/
+old/
+model/
+
+# Virtual environments
+brain/
+venv/
+env/
+
+# Data and large files
+*.tar
+*.pt
+*.pth
+pretrained/
+work_dir/
+work_dir_smoke/
+run_state/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDEs
+.vscode/
+.idea/
+
+# Results
+result/
+v0*/result/
