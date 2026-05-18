@@ -1,70 +1,105 @@
 #!/usr/bin/env bash
+# 简洁状态面板，给 watch --color 用
+set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 STATE_DIR="${STATE_DIR:-./run_state}"
 LOG_DIR="${LOG_DIR:-./logs}"
 
-C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
-C_BLUE=$'\033[34m'; C_BOLD=$'\033[1m'; C_RST=$'\033[0m'
+R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'
+C=$'\033[36m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
 
-format_time() {
-    local sec=$1
-    if   [[ $sec -lt 60 ]];   then echo "${sec}s"
-    elif [[ $sec -lt 3600 ]]; then printf "%dm%02ds" $((sec/60)) $((sec%60))
-    else printf "%dh%02dm" $((sec/3600)) $((sec%3600/60))
+fmt_time() {
+    local s=$1
+    if   [[ $s -lt 60 ]];   then echo "${s}s"
+    elif [[ $s -lt 3600 ]]; then printf "%dm%02ds" $((s/60)) $((s%60))
+    else printf "%dh%02dm" $((s/3600)) $((s%3600/60))
     fi
 }
 
-echo "${C_BOLD}================ BraTS Pipeline 状态 ================${C_RST}"
-echo ""
+# === 任务统计 ===
+n_done=0; n_run=0; n_fail=0; total_t=0
+declare -a running_list=()
+declare -a failed_list=()
+declare -a done_list=()
 
-if [[ ! -d "$STATE_DIR" ]] || [[ -z "$(ls -A "$STATE_DIR" 2>/dev/null)" ]]; then
-    echo "(尚未启动任何任务)"
-    exit 0
-fi
-
-printf "${C_BOLD}%-40s %-10s %s${C_RST}\n" "任务" "状态" "耗时"
-echo "─────────────────────────────────────────────────────"
-
-n_done=0; n_run=0; n_fail=0; total=0
-
-for f in "$STATE_DIR"/*.state; do
-    [[ -f "$f" ]] || continue
-    name=$(basename "$f" .state)
-    IFS='|' read -r status t1 t2 < "$f"
-
-    case "$status" in
-        done)
-            color="$C_GREEN"; sym="✓"; n_done=$((n_done+1))
-            total=$((total + t1))
-            time_str=$(format_time $t1) ;;
-        running)
-            color="$C_YELLOW"; sym="▶"; n_run=$((n_run+1))
-            elapsed=$(($(date +%s) - t1))
-            time_str="$(format_time $elapsed) (运行中)" ;;
-        failed)
-            color="$C_RED"; sym="✗"; n_fail=$((n_fail+1))
-            time_str="$(format_time $t1) [exit=$t2]" ;;
-        *) color="$C_RST"; sym="?"; time_str="$status" ;;
-    esac
-
-    printf "${color}%s %-38s %-10s${C_RST} %s\n" "$sym" "$name" "$status" "$time_str"
-done
-
-echo "─────────────────────────────────────────────────────"
-printf "${C_GREEN}完成: %d${C_RST}  ${C_YELLOW}运行中: %d${C_RST}  ${C_RED}失败: %d${C_RST}  累计训练: %s\n" \
-    "$n_done" "$n_run" "$n_fail" "$(format_time $total)"
-
-if [[ $n_fail -gt 0 ]]; then
-    echo ""
-    echo "${C_RED}失败任务详情:${C_RST}"
+if [[ -d "$STATE_DIR" ]]; then
     for f in "$STATE_DIR"/*.state; do
-        IFS='|' read -r status t1 t2 < "$f"
-        if [[ "$status" == "failed" ]]; then
-            name=$(basename "$f" .state)
-            echo "  - $name (日志: $LOG_DIR/$name.log)"
-            echo "    最后 3 行错误:"
-            tail -n 3 "$LOG_DIR/$name.log" 2>/dev/null | sed 's/^/      /'
-        fi
+        [[ -f "$f" ]] || continue
+        IFS='|' read -r ss t0 rc < "$f"
+        name=$(basename "$f" .state)
+        case "$ss" in
+            done)
+                n_done=$((n_done+1))
+                total_t=$((total_t + t0))
+                done_list+=("$name|$t0")
+                ;;
+            running)
+                n_run=$((n_run+1))
+                elapsed=$(( $(date +%s) - t0 ))
+                running_list+=("$name|$elapsed")
+                ;;
+            failed)
+                n_fail=$((n_fail+1))
+                failed_list+=("$name|${rc:-?}")
+                ;;
+        esac
     done
 fi
+
+# === 头部 ===
+echo "${BOLD}${C}━━━ BraTS Pipeline 状态 ━━━━━━━━━━━━━━━━━━━━━━━${RST}"
+printf "${G}✓ 完成 %d${RST}   ${Y}▶ 运行 %d${RST}   ${R}✗ 失败 %d${RST}\n" \
+    "$n_done" "$n_run" "$n_fail"
+echo ""
+
+# === 运行中（最重要）===
+if [[ ${#running_list[@]} -gt 0 ]]; then
+    echo "${BOLD}运行中:${RST}"
+    for item in "${running_list[@]}"; do
+        IFS='|' read -r name elapsed <<< "$item"
+        short=${name#train_}; short=${short#predict_}
+
+        # 尝试从日志读取 epoch 信息
+        log_file="$LOG_DIR/${name}.log"
+        progress=""
+        if [[ -f "$log_file" ]]; then
+            ep=$(grep -oE "Epoch [0-9]+/[0-9]+" "$log_file" 2>/dev/null | tail -1)
+            if [[ -n "$ep" ]]; then
+                progress=" ${DIM}|${RST} $ep"
+            else
+                pct=$(grep -oE "Loading dataset: *[0-9]+%" "$log_file" 2>/dev/null | tail -1 | grep -oE "[0-9]+%")
+                [[ -n "$pct" ]] && progress=" ${DIM}|${RST} 加载 $pct"
+            fi
+        fi
+
+        printf "  ${Y}▶${RST} %-22s ${DIM}%s${RST}%s\n" \
+            "$short" "$(fmt_time $elapsed)" "$progress"
+    done
+    echo ""
+fi
+
+# === 失败 ===
+if [[ ${#failed_list[@]} -gt 0 ]]; then
+    echo "${BOLD}${R}失败任务:${RST}"
+    for item in "${failed_list[@]}"; do
+        IFS='|' read -r name rc <<< "$item"
+        short=${name#train_}; short=${short#predict_}
+        printf "  ${R}✗${RST} %-22s ${DIM}exit=%s${RST}\n" "$short" "$rc"
+    done
+    echo ""
+fi
+
+# === 完成（折叠显示）===
+if [[ ${#done_list[@]} -gt 0 ]]; then
+    echo "${BOLD}${G}已完成:${RST}"
+    for item in "${done_list[@]}"; do
+        IFS='|' read -r name t <<< "$item"
+        short=${name#train_}; short=${short#predict_}
+        printf "  ${G}✓${RST} %-22s ${DIM}%s${RST}\n" "$short" "$(fmt_time $t)"
+    done
+    echo ""
+fi
+
+# === 累计时间 ===
+[[ $total_t -gt 0 ]] && echo "${DIM}累计训练: $(fmt_time $total_t)${RST}"

@@ -1,116 +1,119 @@
 #!/usr/bin/env bash
-# ============================================================
-# BraTS 训练实时监控
-# 用法: bash scripts/monitor.sh [刷新秒数]
-# ============================================================
-
+# 系统监控：GPU + 内存 + 磁盘（不含训练细节）
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-LOG_DIR="${LOG_DIR:-./logs}"
-WORK_DIR="${WORK_DIR:-./work_dir}"
 STATE_DIR="${STATE_DIR:-./run_state}"
-REFRESH="${1:-10}"
+LOG_DIR="${LOG_DIR:-./logs}"
+REFRESH="${1:-5}"
 
-C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
-C_BLUE=$'\033[34m'; C_CYAN=$'\033[36m'; C_BOLD=$'\033[1m'; C_RST=$'\033[0m'
+R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'
+B=$'\033[34m'; C=$'\033[36m'
+BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
 
-trap 'tput cnorm; clear; exit 0' INT TERM
-tput civis  # 隐藏光标
-clear
+trap 'clear; exit 0' INT TERM
 
-format_time() {
-    local sec=$1
-    if   [[ $sec -lt 60 ]];   then echo "${sec}s"
-    elif [[ $sec -lt 3600 ]]; then printf "%dm%02ds" $((sec/60)) $((sec%60))
-    else printf "%dh%02dm" $((sec/3600)) $((sec%3600/60))
+fmt_time() {
+    local s=$1
+    if   [[ $s -lt 60 ]];   then echo "${s}s"
+    elif [[ $s -lt 3600 ]]; then printf "%dm%02ds" $((s/60)) $((s%60))
+    else printf "%dh%02dm" $((s/3600)) $((s%3600/60))
     fi
 }
 
+bar() {
+    # 进度条 (用 / 共 20 格)
+    local pct=$1
+    local width=20
+    local filled=$(( pct * width / 100 ))
+    local empty=$(( width - filled ))
+    local color=$G
+    [[ $pct -gt 60 ]] && color=$Y
+    [[ $pct -gt 85 ]] && color=$R
+    printf "${color}"
+    printf '█%.0s' $(seq 1 $filled) 2>/dev/null
+    printf "${DIM}"
+    printf '░%.0s' $(seq 1 $empty) 2>/dev/null
+    printf "${RST}"
+}
+
 while true; do
-    tput cup 0 0
+    clear
 
-    echo "${C_BOLD}${C_CYAN}╔══════════════════════════════════════════════════════════════════╗${C_RST}"
-    echo "${C_BOLD}${C_CYAN}║  BraTS2021 训练实时监控   $(date '+%Y-%m-%d %H:%M:%S')   刷新:${REFRESH}s   ║${C_RST}"
-    echo "${C_BOLD}${C_CYAN}╚══════════════════════════════════════════════════════════════════╝${C_RST}"
+    # ===== 标题 =====
+    echo "${BOLD}${C}━━ 系统监控  $(date '+%H:%M:%S')  刷新${REFRESH}s ━━${RST}"
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        echo "${G}● ${RST}venv: $(basename $VIRTUAL_ENV) | py: $(python --version 2>&1 | awk '{print $2}')"
+    fi
     echo ""
 
-    # ---- GPU ----
-    echo "${C_BOLD}━━ GPU ━━${C_RST}"
-    nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw \
-        --format=csv,noheader,nounits 2>/dev/null | \
-    while IFS=',' read -r idx util mem_u mem_t temp pwr; do
-        printf "  GPU %s │ 利用率 ${C_GREEN}%3s%%${C_RST} │ 显存 ${C_YELLOW}%5s${C_RST}/%5s MB │ %s°C │ %.1fW\n" \
-            "$idx" "$util" "$mem_u" "$mem_t" "$temp" "$pwr"
-    done
+    # ===== GPU =====
+    echo "${BOLD}GPU${RST}"
+    gpu_info=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw \
+        --format=csv,noheader,nounits 2>/dev/null | head -n 1)
+    if [[ -n "$gpu_info" ]]; then
+        IFS=',' read -r util mem_u mem_t temp pwr <<< "$gpu_info"
+        util=$(echo "$util" | xargs); mem_u=$(echo "$mem_u" | xargs)
+        mem_t=$(echo "$mem_t" | xargs); temp=$(echo "$temp" | xargs); pwr=$(echo "$pwr" | xargs)
+
+        mem_pct=$(awk "BEGIN{printf \"%.0f\", $mem_u*100/$mem_t}")
+
+        printf "  利用率  $(bar $util) ${G}%3s%%${RST}\n" "$util"
+        printf "  显存    $(bar $mem_pct) %s/%sMB\n" "$mem_u" "$mem_t"
+        printf "  ${DIM}温度 %s°C  功耗 %.0fW${RST}\n" "$temp" "$pwr"
+    fi
     echo ""
 
-    # ---- 内存 / 磁盘 ----
-    echo "${C_BOLD}━━ 系统资源 ━━${C_RST}"
-    free -h | awk 'NR==2{printf "  内存: 已用 %s / %s (可用 %s)\n", $3, $2, $7}'
-    df -h /root/autodl-tmp 2>/dev/null | awk 'NR==2{printf "  /root/autodl-tmp: %s / %s (%s)\n", $3, $2, $5}'
-    df -h . | awk 'NR==2{printf "  当前目录: %s / %s (%s)\n", $3, $2, $5}'
+    # ===== 内存（容器）=====
+    echo "${BOLD}内存（容器）${RST}"
+    if [[ -f /sys/fs/cgroup/memory/memory.usage_in_bytes ]]; then
+        mused=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes)
+        mlimit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+        mused_gb=$(awk "BEGIN{printf \"%.0f\", $mused/1073741824}")
+        mlimit_gb=$(awk "BEGIN{printf \"%.0f\", $mlimit/1073741824}")
+        mpct=$(awk "BEGIN{printf \"%.0f\", $mused*100/$mlimit}")
+        printf "  $(bar $mpct) %sG/%sG (%s%%)\n" "$mused_gb" "$mlimit_gb" "$mpct"
+    else
+        free -h | awk 'NR==2{printf "  %s / %s (可用 %s)\n", $3, $2, $7}'
+    fi
     echo ""
 
-    # ---- 任务状态 ----
-    echo "${C_BOLD}━━ 任务状态 ━━${C_RST}"
+    # ===== 磁盘 =====
+    echo "${BOLD}存储${RST}"
+    df_data=$(df /root/autodl-tmp 2>/dev/null | awk 'NR==2{printf "%d %s", $5+0, $5}')
+    df_used=$(df -h /root/autodl-tmp 2>/dev/null | awk 'NR==2{printf "%s/%s", $3, $2}')
+    if [[ -n "$df_data" ]]; then
+        pct=$(echo $df_data | cut -d' ' -f1)
+        printf "  数据盘   $(bar $pct) %s\n" "$df_used"
+    fi
+
+    shm_pct=$(df /dev/shm 2>/dev/null | awk 'NR==2{print $5+0}')
+    shm_used=$(df -h /dev/shm 2>/dev/null | awk 'NR==2{printf "%s/%s", $3, $2}')
+    [[ -n "$shm_pct" ]] && printf "  /dev/shm $(bar $shm_pct) %s\n" "$shm_used"
+    echo ""
+
+    # ===== 当前任务（简洁）=====
+    echo "${BOLD}当前任务${RST}"
+    n_done=0; n_run=0; n_fail=0; running_name=""; running_elapsed=0
     if [[ -d "$STATE_DIR" ]]; then
-        n_done=0; n_run=0; n_fail=0
         for f in "$STATE_DIR"/*.state; do
             [[ -f "$f" ]] || continue
-            s=$(cut -d'|' -f1 "$f")
-            case "$s" in
-                done)    n_done=$((n_done+1)) ;;
-                running) n_run=$((n_run+1)) ;;
-                failed)  n_fail=$((n_fail+1)) ;;
+            IFS='|' read -r ss t0 _ < "$f"
+            case "$ss" in
+                done) n_done=$((n_done+1)) ;;
+                failed) n_fail=$((n_fail+1)) ;;
+                running)
+                    n_run=$((n_run+1))
+                    running_name=$(basename "$f" .state)
+                    running_elapsed=$(( $(date +%s) - t0 ))
+                    ;;
             esac
         done
-        printf "  ${C_GREEN}完成: %d${C_RST}  │  ${C_YELLOW}运行中: %d${C_RST}  │  ${C_RED}失败: %d${C_RST}\n" \
-            "$n_done" "$n_run" "$n_fail"
-
-        # 显示运行中的任务
-        for f in "$STATE_DIR"/*.state; do
-            [[ -f "$f" ]] || continue
-            IFS='|' read -r s t0 _ < "$f"
-            if [[ "$s" == "running" ]]; then
-                elapsed=$(( $(date +%s) - t0 ))
-                printf "  ${C_YELLOW}▶${C_RST} $(basename "$f" .state) (已运行 $(format_time $elapsed))\n"
-            fi
-        done
-    else
-        echo "  (尚未启动任何任务)"
     fi
-    echo ""
-
-    # ---- 训练进度 ----
-    echo "${C_BOLD}━━ 训练进度 ━━${C_RST}"
-    found=0
-    for log_file in "$LOG_DIR"/train_*.log; do
-        [[ -f "$log_file" ]] || continue
-        found=1
-        name=$(basename "$log_file" .log)
-
-        last_ep=$(grep -oE "Epoch [0-9]+/[0-9]+" "$log_file" 2>/dev/null | tail -n 1)
-        last_loss=$(grep -oE "loss=[0-9.]+" "$log_file" 2>/dev/null | tail -n 1)
-        last_dice=$(grep -oE "mean=[0-9.]+" "$log_file" 2>/dev/null | tail -n 1)
-        last_lr=$(grep -oE "lr=[0-9.e+-]+" "$log_file" 2>/dev/null | tail -n 1)
-
-        printf "  %-32s  %-14s  %-12s  %-14s  %s\n" \
-            "$name" "${last_ep:-—}" "${last_loss:-—}" "${last_lr:-—}" "${last_dice:-—}"
-    done
-    [[ $found -eq 0 ]] && echo "  (尚未开始训练)"
-    echo ""
-
-    # ---- 最新日志 ----
-    echo "${C_BOLD}━━ 最新日志 (run_all) ━━${C_RST}"
-    if [[ -f "$LOG_DIR/run_all.log" ]]; then
-        tail -n 5 "$LOG_DIR/run_all.log" | sed 's/^/  /'
+    printf "  ${G}完成${RST} %d   ${Y}运行中${RST} %d   ${R}失败${RST} %d\n" "$n_done" "$n_run" "$n_fail"
+    if [[ -n "$running_name" ]]; then
+        short=${running_name#train_}; short=${short#predict_}
+        printf "  ${Y}▶${RST} %s  ${DIM}%s${RST}\n" "$short" "$(fmt_time $running_elapsed)"
     fi
-    echo ""
-
-    echo "${C_BLUE}按 Ctrl+C 退出${C_RST}"
-
-    # 清屏到底
-    tput ed
 
     sleep "$REFRESH"
-dones
+done

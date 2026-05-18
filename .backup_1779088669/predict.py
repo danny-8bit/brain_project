@@ -87,7 +87,7 @@ def main():
                 sigmoid=True,
             )
 
-            prob_np = (prob[0].cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8)
+            prob_np = prob[0].cpu().numpy().astype(np.float16)
             np.savez_compressed(out_dir / f"{case_id}.npz", prob=prob_np)
 
 

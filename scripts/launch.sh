@@ -25,13 +25,13 @@ case "$cmd" in
 
         # 创建三窗格：训练 / 监控 / 命令行
         tmux new-session  -d -s "$SESSION" -n main
-        tmux send-keys    -t "$SESSION:main" "bash scripts/run_all.sh ${@:2}" C-m
+        tmux send-keys    -t "$SESSION:main" "source brain/bin/activate && bash scripts/run_all.sh ${@:2}" C-m
 
         tmux split-window -h -t "$SESSION:main"
-        tmux send-keys    -t "$SESSION:main.1" "sleep 3 && bash scripts/monitor.sh" C-m
+        tmux send-keys    -t "$SESSION:main.1" "source brain/bin/activate && sleep 3 && bash scripts/monitor.sh" C-m
 
         tmux split-window -v -t "$SESSION:main.1"
-        tmux send-keys    -t "$SESSION:main.2" "watch -n 30 'bash scripts/status.sh'" C-m
+        tmux send-keys    -t "$SESSION:main.2" "source brain/bin/activate && bash scripts/live_train.sh" C-m
 
         tmux select-pane  -t "$SESSION:main.0"
 

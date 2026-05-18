@@ -52,11 +52,7 @@ def main():
     for case_id in tqdm(cases, desc="Ensemble", ncols=100):
         probs = []
         for d in prob_dirs:
-            arr_raw = np.load(d / f"{case_id}.npz")["prob"]
-            if arr_raw.dtype == np.uint8:
-                arr = arr_raw.astype(np.float32) / 255.0
-            else:
-                arr = arr_raw.astype(np.float32)
+            arr = np.load(d / f"{case_id}.npz")["prob"].astype(np.float32)
             probs.append(arr)
 
         # 加权平均

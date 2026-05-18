@@ -10,22 +10,22 @@ grad_clip: 1.0
 data_root: ./data/BraTS2021_TrainingData
 folds_json: ./data/folds.json
 num_folds: 5
-num_workers: 8          # autodl 一般 16 核，12 比较安全
-cache_rate: 0.5          # 全缓存，吃内存约 60~80GB，训练快 2~3 倍
+num_workers: 12          # autodl 一般 16 核，12 比较安全
+cache_rate: 1.0          # 全缓存，吃内存约 60~80GB，训练快 2~3 倍
 
 # 训练 (200 epoch 黄金平衡点)
 roi_size: [128, 128, 128]
 batch_size: 2
 sw_batch_size: 4
-max_epochs: 150
+max_epochs: 200          # 从 800 降到 200，时间 1/4，Dice 仅降 ~0.01
 warmup_epochs: 10        # 配合 200 epoch，原 20 显得太长
-val_interval: 15
+val_interval: 20         # 每 20 epoch 验证一次
 lr: 3.0e-4
 weight_decay: 1.0e-5
 
 # SWA (最后 25% = 50 epoch 做平均)
 use_swa: true
-swa_start_ratio: 0.73
+swa_start_ratio: 0.75    # 原 0.85 在 200ep 下只剩 30ep SWA 太少
 swa_lr: 5.0e-5
 
 # === 省磁盘开关 (14GB 适配) ===
