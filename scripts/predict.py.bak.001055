@@ -93,21 +93,7 @@ def main():
             image = batch["image"].to(device)
 
             # 从原始 files 列表稳定取 case_id（比 image_meta_dict 兼容性更好）
-            # 兼容多种数据格式取 case_id
-            entry = files[idx]
-            fpath = None
-            for _k in ["image", "t1ce", "t1", "t2", "flair"]:
-                if _k in entry:
-                    _v = entry[_k]
-                    fpath = _v[0] if isinstance(_v, (list, tuple)) else _v
-                    break
-            if fpath is None:
-                for _kk, _vv in entry.items():
-                    if "label" in _kk.lower() or "seg" in _kk.lower():
-                        continue
-                    fpath = _vv[0] if isinstance(_vv, (list, tuple)) else _vv
-                    break
-            case_id = Path(fpath).parent.name
+            case_id = Path(files[idx]["image"][0]).parent.name
 
             # ===== 推理 + 计时 =====
             t0 = time.time()
