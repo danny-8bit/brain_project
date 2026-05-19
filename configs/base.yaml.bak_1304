@@ -11,7 +11,7 @@ data_root: ./data/BraTS2021_TrainingData
 folds_json: ./data/folds.json
 num_folds: 5
 num_workers: 8          # autodl 一般 16 核，12 比较安全
-cache_rate: 0.45
+cache_rate: 0.5          # 全缓存，吃内存约 60~80GB，训练快 2~3 倍
 
 # 训练 (200 epoch 黄金平衡点)
 roi_size: [128, 128, 128]
