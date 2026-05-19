@@ -1,6 +1,0 @@
-model: segresnet
-init_filters: 32
-dropout: 0.2
-lr: 2.0e-4
-batch_size: 2
-roi_size: [128, 128, 128]
