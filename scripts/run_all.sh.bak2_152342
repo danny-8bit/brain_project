@@ -160,34 +160,11 @@ train_and_predict_fold() {
     local model="$1"
     local fold="$2"
 
-    # ============ Auto-Resume 检测 ============
-    local last_pt="$WORK_DIR/${model}/fold_${fold}/last.pt"
-    local resume_arg=""
-    if [[ -f "$last_pt" ]]; then
-        local resume_epoch
-        resume_epoch=$(python -c "
-import torch
-try:
-    c = torch.load('$last_pt', map_location='cpu', weights_only=False)
-    print(int(c.get('epoch', 0)))
-except Exception:
-    print(0)
-" 2>/dev/null)
-        if [[ "$resume_epoch" =~ ^[0-9]+$ ]] && (( resume_epoch > 5 )); then
-            log "${C_YELLOW}[RESUME]${C_RST}  ${model} fold${fold} from epoch=${resume_epoch}"
-            resume_arg="--resume $last_pt"
-        else
-            log "${C_YELLOW}[FRESH]${C_RST}   ${model} fold${fold} (last.pt epoch=${resume_epoch})"
-        fi
-    fi
-    # ==========================================
-
-
     run_step "train_${model}_fold${fold}" \
         python scripts/train.py \
             --base_config configs/base.yaml \
             --model_config "configs/${model}.yaml" \
-            --fold $fold --gpu $GPU $resume_arg || return $?
+            --fold $fold --gpu $GPU || return $?
 
     local ckpt="$WORK_DIR/${model}/fold_${fold}/best.pt"
     if [[ ! -f "$ckpt" ]]; then
