@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+"""
+Ensemble + Grid Search for BraTS 5-fold OOF probabilities.
+
+Strategy (phased to be fast):
+  Phase 1: Search ensemble weight alpha (segresnet weight, swinunetr = 1-alpha)
+           with default threshold 0.5 (uint8: 128) and no post-processing.
+  Phase 2: With best alpha fixed, search per-region threshold.
+  Phase 3: With best alpha + thresholds fixed, search per-region min component size.
+
+Output:
+  - {out_dir}/best_config.json    : best alpha, thresholds, min_sizes
+  - {out_dir}/grid_phase1.csv     : alpha sweep results
+  - {out_dir}/grid_phase2.csv     : threshold sweep results
+  - {out_dir}/grid_phase3.csv     : min component sweep results
+  - {out_dir}/final_per_case.csv  : per-case dice with best config
+  - {out_dir}/summary.txt         : human-readable summary
+
+Usage:
+  python scripts/grid_search.py \\
+      --oof_dirs /dev/shm/brats_probs/segresnet_oof /dev/shm/brats_probs/swinunetr_oof \\
+      --model_names segresnet swinunetr \\
+      --data_root data/BraTS2021_TrainingData \\
+      --out_dir work_dir/grid_search
+"""
+
+import argparse
+import csv
+import json
+import time
+from pathlib import Path
+
+import numpy as np
+import nibabel as nib
+from scipy.ndimage import label, generate_binary_structure
+
+
+REGIONS = ["tc", "wt", "et"]
+
+
+def gt_regions(seg):
+    seg = seg.astype(np.uint8)
+    return {
+        "tc": np.logical_or(seg == 1, seg == 4),
+        "wt": seg > 0,
+        "et": seg == 4,
+    }
+
+
+def dice_binary(pred, gt):
+    pred = pred.astype(bool)
+    gt = gt.astype(bool)
+    ps = pred.sum()
+    gs = gt.sum()
+    if ps == 0 and gs == 0:
+        return 1.0
+    if ps == 0 or gs == 0:
+        return 0.0
+    inter = np.logical_and(pred, gt).sum()
+    return float(2.0 * inter / (ps + gs))
+
+
+def remove_small_components(mask, min_size):
+    if min_size <= 0 or not mask.any():
+        return mask
+    structure = generate_binary_structure(3, 2)
+    labeled, n = label(mask, structure=structure)
+    if n == 0:
+        return mask
+    sizes = np.bincount(labeled.ravel())
+    sizes[0] = 0
+    keep = sizes >= min_size
+    return keep[labeled]
+
+
+def load_prob_uint8(path):
+    """Load probability map as uint8 (0~255), shape (3, H, W, D)."""
+    z = np.load(path)
+    p = z["prob"]
+    if p.dtype != np.uint8:
+        # Normalize float to uint8 if needed
+        if p.dtype in (np.float32, np.float64, np.float16):
+            p = np.clip(p * 255.0 if p.max() <= 1.0 else p, 0, 255).astype(np.uint8)
+        else:
+            p = p.astype(np.uint8)
+    if p.shape[0] != 3:
+        raise ValueError(f"{path}: expected (3,H,W,D), got {p.shape}")
+    return p
+
+
+def list_cases(oof_dirs):
+    sets = []
+    for d in oof_dirs:
+        files = sorted(Path(d).glob("*.npz"))
+        cases = set(f.stem for f in files)
+        sets.append(cases)
+    common = sets[0].intersection(*sets[1:]) if len(sets) > 1 else sets[0]
+    return sorted(common)
+
+
+def ensemble_uint8(probs_list, weights):
+    """Weighted average of uint8 probabilities, return uint8."""
+    out = np.zeros_like(probs_list[0], dtype=np.float32)
+    for p, w in zip(probs_list, weights):
+        out += p.astype(np.float32) * float(w)
+    out = np.clip(out, 0, 255).astype(np.uint8)
+    return out
+
+
+def evaluate_case_for_alphas(probs_list, gt, alphas, thresh_uint8=128):
+    """Compute dice per region for each alpha (segresnet weight)."""
+    results = {}
+    for alpha in alphas:
+        if len(probs_list) == 2:
+            weights = [alpha, 1.0 - alpha]
+        else:
+            # Equal weight fallback
+            weights = [1.0 / len(probs_list)] * len(probs_list)
+        ens = ensemble_uint8(probs_list, weights)
+        d = {}
+        for i, r in enumerate(REGIONS):
+            pred = ens[i] >= thresh_uint8
+            d[r] = dice_binary(pred, gt[r])
+        d["mean"] = float(np.mean([d[r] for r in REGIONS]))
+        results[alpha] = d
+    return results
+
+
+def evaluate_case_for_thresholds(probs_list, gt, weights, thresholds_per_region):
+    """For a fixed alpha, search per-region thresholds."""
+    ens = ensemble_uint8(probs_list, weights)
+    out = {}
+    for i, r in enumerate(REGIONS):
+        for t in thresholds_per_region:
+            t_uint8 = int(round(t * 255))
+            pred = ens[i] >= t_uint8
+            out.setdefault(r, {})[t] = dice_binary(pred, gt[r])
+    return out
+
+
+def evaluate_case_for_min_sizes(probs_list, gt, weights, thresholds, min_sizes_per_region):
+    """For fixed alpha + thresholds, search per-region min component sizes."""
+    ens = ensemble_uint8(probs_list, weights)
+    out = {}
+    for i, r in enumerate(REGIONS):
+        t_uint8 = int(round(thresholds[r] * 255))
+        pred = ens[i] >= t_uint8
+        for ms in min_sizes_per_region:
+            cleaned = remove_small_components(pred, ms)
+            out.setdefault(r, {})[ms] = dice_binary(cleaned, gt[r])
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--oof_dirs", nargs="+", required=True,
+                    help="OOF directories, one per model")
+    ap.add_argument("--model_names", nargs="+", required=True,
+                    help="Model names, same order as --oof_dirs")
+    ap.add_argument("--data_root", default="data/BraTS2021_TrainingData")
+    ap.add_argument("--out_dir", default="work_dir/grid_search")
+    ap.add_argument("--max_cases", type=int, default=0,
+                    help="0 = all cases")
+    # Phase 1 grid: alpha
+    ap.add_argument("--alphas", nargs="*", type=float,
+                    default=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+    # Phase 2 grid: threshold per region
+    ap.add_argument("--thresholds", nargs="*", type=float,
+                    default=[0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70])
+    # Phase 3 grid: min component size per region
+    ap.add_argument("--min_sizes", nargs="*", type=int,
+                    default=[0, 50, 100, 200, 500, 1000])
+    args = ap.parse_args()
+
+    if len(args.oof_dirs) != len(args.model_names):
+        raise SystemExit("--oof_dirs and --model_names must have the same length")
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    data_root = Path(args.data_root)
+    oof_dirs = [Path(d) for d in args.oof_dirs]
+
+    print("=" * 70)
+    print("Grid Search Configuration")
+    print("=" * 70)
+    for n, d in zip(args.model_names, oof_dirs):
+        print(f"  {n:12s} -> {d}")
+    print(f"  data_root: {data_root}")
+    print(f"  out_dir:   {out_dir}")
+    print(f"  alphas:    {args.alphas}")
+    print(f"  thresh:    {args.thresholds}")
+    print(f"  min_size:  {args.min_sizes}")
+    print()
+
+    # ---- list cases ----
+    cases = list_cases(oof_dirs)
+    if args.max_cases > 0:
+        cases = cases[: args.max_cases]
+    print(f"Total cases (intersection): {len(cases)}")
+    print()
+
+    # ============================================================
+    # Phase 1: alpha sweep with default threshold 0.5
+    # ============================================================
+    print("=" * 70)
+    print("Phase 1: alpha sweep (threshold=0.5, no post-process)")
+    print("=" * 70)
+    t0 = time.time()
+
+    phase1_acc = {a: {r: [] for r in REGIONS + ["mean"]} for a in args.alphas}
+
+    for ci, case_id in enumerate(cases, 1):
+        # load probs
+        try:
+            probs = [load_prob_uint8(d / f"{case_id}.npz") for d in oof_dirs]
+        except Exception as e:
+            print(f"  [skip] {case_id}: load fail ({e})")
+            continue
+
+        # load GT
+        gt_path = data_root / case_id / f"{case_id}_seg.nii.gz"
+        if not gt_path.exists():
+            print(f"  [skip] {case_id}: GT not found")
+            continue
+        seg = np.asarray(nib.load(str(gt_path)).dataobj)
+        gt = gt_regions(seg)
+
+        # evaluate
+        res = evaluate_case_for_alphas(probs, gt, args.alphas, thresh_uint8=128)
+        for a in args.alphas:
+            for k in REGIONS + ["mean"]:
+                phase1_acc[a][k].append(res[a][k])
+
+        if ci % 50 == 0 or ci == len(cases):
+            print(f"  [{ci}/{len(cases)}] {case_id}")
+
+    phase1_summary = []
+    for a in args.alphas:
+        row = {"alpha": a}
+        for k in REGIONS + ["mean"]:
+            vals = phase1_acc[a][k]
+            row[f"dice_{k}"] = float(np.mean(vals)) if vals else 0.0
+        phase1_summary.append(row)
+
+    # save phase 1 csv
+    p1_csv = out_dir / "grid_phase1.csv"
+    with p1_csv.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["alpha", "dice_tc", "dice_wt", "dice_et", "dice_mean"])
+        w.writeheader()
+        w.writerows(phase1_summary)
+
+    best_alpha_row = max(phase1_summary, key=lambda r: r["dice_mean"])
+    best_alpha = best_alpha_row["alpha"]
+
+    print()
+    print(f"Phase 1 best: alpha={best_alpha:.2f}  dice_mean={best_alpha_row['dice_mean']:.4f}")
+    print(f"  TC={best_alpha_row['dice_tc']:.4f}  "
+          f"WT={best_alpha_row['dice_wt']:.4f}  "
+          f"ET={best_alpha_row['dice_et']:.4f}")
+    print(f"  saved: {p1_csv}")
+    print(f"  elapsed: {time.time() - t0:.1f}s")
+    print()
+
+    # ============================================================
+    # Phase 2: per-region threshold with best alpha
+    # ============================================================
+    print("=" * 70)
+    print(f"Phase 2: per-region threshold (alpha={best_alpha:.2f})")
+    print("=" * 70)
+    t0 = time.time()
+
+    weights = [best_alpha, 1.0 - best_alpha] if len(oof_dirs) == 2 else \
+        [1.0 / len(oof_dirs)] * len(oof_dirs)
+
+    phase2_acc = {r: {t: [] for t in args.thresholds} for r in REGIONS}
+
+    for ci, case_id in enumerate(cases, 1):
+        try:
+            probs = [load_prob_uint8(d / f"{case_id}.npz") for d in oof_dirs]
+        except Exception:
+            continue
+        gt_path = data_root / case_id / f"{case_id}_seg.nii.gz"
+        if not gt_path.exists():
+            continue
+        seg = np.asarray(nib.load(str(gt_path)).dataobj)
+        gt = gt_regions(seg)
+
+        res = evaluate_case_for_thresholds(probs, gt, weights, args.thresholds)
+        for r in REGIONS:
+            for t in args.thresholds:
+                phase2_acc[r][t].append(res[r][t])
+
+        if ci % 100 == 0 or ci == len(cases):
+            print(f"  [{ci}/{len(cases)}] {case_id}")
+
+    phase2_rows = []
+    best_thresh = {}
+    for r in REGIONS:
+        best_t = max(args.thresholds, key=lambda t: np.mean(phase2_acc[r][t]) if phase2_acc[r][t] else 0)
+        best_thresh[r] = best_t
+        for t in args.thresholds:
+            phase2_rows.append({
+                "region": r,
+                "threshold": t,
+                "dice": float(np.mean(phase2_acc[r][t])) if phase2_acc[r][t] else 0.0,
+            })
+
+    p2_csv = out_dir / "grid_phase2.csv"
+    with p2_csv.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["region", "threshold", "dice"])
+        w.writeheader()
+        w.writerows(phase2_rows)
+
+    print()
+    print(f"Phase 2 best thresholds:")
+    for r in REGIONS:
+        best_dice = float(np.mean(phase2_acc[r][best_thresh[r]]))
+        print(f"  {r}: threshold={best_thresh[r]:.2f}  dice={best_dice:.4f}")
+    print(f"  saved: {p2_csv}")
+    print(f"  elapsed: {time.time() - t0:.1f}s")
+    print()
+
+    # ============================================================
+    # Phase 3: per-region min component size
+    # ============================================================
+    print("=" * 70)
+    print(f"Phase 3: per-region min component size")
+    print("=" * 70)
+    t0 = time.time()
+
+    phase3_acc = {r: {ms: [] for ms in args.min_sizes} for r in REGIONS}
+
+    for ci, case_id in enumerate(cases, 1):
+        try:
+            probs = [load_prob_uint8(d / f"{case_id}.npz") for d in oof_dirs]
+        except Exception:
+            continue
+        gt_path = data_root / case_id / f"{case_id}_seg.nii.gz"
+        if not gt_path.exists():
+            continue
+        seg = np.asarray(nib.load(str(gt_path)).dataobj)
+        gt = gt_regions(seg)
+
+        res = evaluate_case_for_min_sizes(probs, gt, weights, best_thresh, args.min_sizes)
+        for r in REGIONS:
+            for ms in args.min_sizes:
+                phase3_acc[r][ms].append(res[r][ms])
+
+        if ci % 100 == 0 or ci == len(cases):
+            print(f"  [{ci}/{len(cases)}] {case_id}")
+
+    phase3_rows = []
+    best_min_size = {}
+    for r in REGIONS:
+        best_ms = max(args.min_sizes, key=lambda m: np.mean(phase3_acc[r][m]) if phase3_acc[r][m] else 0)
+        best_min_size[r] = best_ms
+        for ms in args.min_sizes:
+            phase3_rows.append({
+                "region": r,
+                "min_size": ms,
+                "dice": float(np.mean(phase3_acc[r][ms])) if phase3_acc[r][ms] else 0.0,
+            })
+
+    p3_csv = out_dir / "grid_phase3.csv"
+    with p3_csv.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["region", "min_size", "dice"])
+        w.writeheader()
+        w.writerows(phase3_rows)
+
+    print()
+    print(f"Phase 3 best min sizes:")
+    for r in REGIONS:
+        best_dice = float(np.mean(phase3_acc[r][best_min_size[r]]))
+        print(f"  {r}: min_size={best_min_size[r]:>5d}  dice={best_dice:.4f}")
+    print(f"  saved: {p3_csv}")
+    print(f"  elapsed: {time.time() - t0:.1f}s")
+    print()
+
+    # ============================================================
+    # Save best config & final summary
+    # ============================================================
+    best_config = {
+        "models": dict(zip(args.model_names, args.oof_dirs)),
+        "weights": dict(zip(args.model_names, [best_alpha, 1.0 - best_alpha] if len(args.oof_dirs) == 2 else [1.0 / len(args.oof_dirs)] * len(args.oof_dirs))),
+        "alpha": best_alpha,
+        "thresholds": {r: best_thresh[r] for r in REGIONS},
+        "min_sizes": {r: best_min_size[r] for r in REGIONS},
+        "final_dice": {
+            r: float(np.mean(phase3_acc[r][best_min_size[r]])) for r in REGIONS
+        },
+    }
+    best_config["final_dice"]["mean"] = float(np.mean(list(best_config["final_dice"].values())))
+
+    with (out_dir / "best_config.json").open("w") as f:
+        json.dump(best_config, f, indent=2)
+
+    summary_lines = []
+    summary_lines.append("=" * 70)
+    summary_lines.append("GRID SEARCH FINAL RESULTS")
+    summary_lines.append("=" * 70)
+    summary_lines.append(f"Models: {', '.join(args.model_names)}")
+    summary_lines.append(f"OOF dirs: {[str(d) for d in oof_dirs]}")
+    summary_lines.append(f"N cases: {len(cases)}")
+    summary_lines.append("")
+    summary_lines.append("Best Ensemble Weights:")
+    for m, w in best_config["weights"].items():
+        summary_lines.append(f"  {m}: {w:.2f}")
+    summary_lines.append("")
+    summary_lines.append("Best Per-Region Thresholds:")
+    for r in REGIONS:
+        summary_lines.append(f"  {r}: {best_thresh[r]:.2f}")
+    summary_lines.append("")
+    summary_lines.append("Best Per-Region Min Component Sizes:")
+    for r in REGIONS:
+        summary_lines.append(f"  {r}: {best_min_size[r]}")
+    summary_lines.append("")
+    summary_lines.append("Final Dice:")
+    for r in REGIONS:
+        summary_lines.append(f"  {r}:   {best_config['final_dice'][r]:.4f}")
+    summary_lines.append(f"  mean: {best_config['final_dice']['mean']:.4f}")
+    summary_lines.append("=" * 70)
+
+    summary_text = "\n".join(summary_lines)
+    with (out_dir / "summary.txt").open("w") as f:
+        f.write(summary_text + "\n")
+    print()
+    print(summary_text)
+    print()
+    print(f"All outputs saved to: {out_dir}")
+
+
+if __name__ == "__main__":
+    main()

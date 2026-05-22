@@ -287,8 +287,7 @@ main() {
         for MODEL in "${MONAI_MODELS[@]}"; do
             section "仅推理 ${MODEL}"
             for FOLD in "${FOLDS[@]}"; do
-                local ckpt=""
-                ckpt="$WORK_DIR/${MODEL}/fold_${FOLD}/best.pt"
+                local ckpt="$WORK_DIR/${MODEL}/fold_${FOLD}/best.pt"
                 [[ ! -f "$ckpt" ]] && continue
                 run_step "predict_${MODEL}_fold${FOLD}" \
                     python scripts/predict.py \

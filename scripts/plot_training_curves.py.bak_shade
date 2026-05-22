@@ -10,6 +10,16 @@ F4 论文训练曲线图
 
 输出 2x2 网格：训练 Loss / 平均 Val Dice / 三区域 Dice / 学习率
 所有 fold 取均值，阴影显示 ±1 std。
+
+用法:
+  # 默认（自动检测 logs/ 下所有模型）
+  python scripts/plot_training_curves.py
+
+  # 指定模型对比
+  python scripts/plot_training_curves.py --models segresnet,swinunetr
+
+  # 单模型单 fold（训练中快速看）
+  python scripts/plot_training_curves.py --models segresnet --folds 0
 """
 
 import argparse
@@ -21,11 +31,6 @@ from collections import defaultdict
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-
-# ===== 论文版: 禁用 fill_between (阴影) =====
-import matplotlib.axes as _mpl_axes
-_mpl_axes.Axes.fill_between = lambda *a, **k: None
-_mpl_axes.Axes.fill_betweenx = lambda *a, **k: None
 
 
 # ===== 正则：匹配训练日志中的关键行 =====
@@ -56,21 +61,29 @@ RE_SWA = re.compile(
 )
 
 
+# ===== 配色（学术风）=====
 MODEL_COLORS = {
-    "segresnet": "#2E86AB",
-    "swinunetr": "#E63946",
-    "mednext":   "#06A77D",
-    "fused":     "#9B59B6",
+    "segresnet": "#2E86AB",   # 深蓝
+    "swinunetr": "#E63946",   # 砖红
+    "mednext":   "#06A77D",   # 翠绿
+    "fused":     "#9B59B6",   # 紫
 }
 
 REGION_COLORS = {
-    "wt": "#1f77b4",
-    "tc": "#ff7f0e",
-    "et": "#2ca02c",
+    "wt": "#1f77b4",   # 蓝
+    "tc": "#ff7f0e",   # 橙
+    "et": "#2ca02c",   # 绿
 }
 
 
 def parse_log(log_path: Path) -> dict:
+    """
+    解析单个 log 文件，返回 dict：
+      train: {epoch: {loss, lr, time}}
+      val:   {epoch: {mean, tc, wt, et}}
+      best:  (epoch, dice)
+      swa:   epoch or None
+    """
     train = {}
     val = {}
     best = None
@@ -117,6 +130,7 @@ def parse_log(log_path: Path) -> dict:
 
 
 def find_log(logs_dir: Path, work_dir: Path, model: str, fold: int) -> Path:
+    """智能查找日志位置"""
     candidates = [
         logs_dir / f"train_{model}_fold{fold}.log",
         logs_dir / f"train_{model}_fold_{fold}.log",
@@ -130,11 +144,16 @@ def find_log(logs_dir: Path, work_dir: Path, model: str, fold: int) -> Path:
 
 
 def aggregate_folds(fold_data_list: list, key_chain: list) -> tuple:
+    """
+    跨 fold 聚合：返回 (epochs, mean, std)
+    key_chain: e.g. ["train", "loss"] 或 ["val", "mean"]
+    """
     all_series = []
     for d in fold_data_list:
         if d is None:
             continue
         source = d[key_chain[0]]
+        # 提取 epoch -> value
         series = {ep: v[key_chain[1]] for ep, v in source.items()
                   if key_chain[1] in v}
         if series:
@@ -143,6 +162,7 @@ def aggregate_folds(fold_data_list: list, key_chain: list) -> tuple:
     if not all_series:
         return np.array([]), np.array([]), np.array([])
 
+    # 取所有 fold 都有的 epoch（不要 NaN）
     all_epochs = sorted(set().union(*[s.keys() for s in all_series]))
 
     means, stds = [], []
@@ -155,15 +175,17 @@ def aggregate_folds(fold_data_list: list, key_chain: list) -> tuple:
 
 
 def plot_curve(ax, epochs, mean, std, label, color, linewidth=2, alpha_fill=0.2):
+    """画一条带阴影带的曲线"""
     if len(epochs) == 0:
         return
     ax.plot(epochs, mean, color=color, linewidth=linewidth, label=label)
     if (std > 0).any():
-        ax.fill_between(epochs, mean - std, mean + std,
+        # ax.fill_between(epochs, mean - std, mean + std,
                         color=color, alpha=alpha_fill)
 
 
 def smooth(x, window=5):
+    """简单移动平均平滑"""
     if len(x) < window:
         return x
     return np.convolve(x, np.ones(window) / window, mode='valid')
@@ -172,15 +194,22 @@ def smooth(x, window=5):
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
                                      description=__doc__)
-    parser.add_argument("--logs_dir", default="./logs")
-    parser.add_argument("--work_dir", default="./work_dir")
-    parser.add_argument("--models", default="segresnet,swinunetr")
-    parser.add_argument("--folds", default="0,1,2,3,4")
-    parser.add_argument("--output", default="paper_figs/F4_training_curves.png")
-    parser.add_argument("--smooth_loss", type=int, default=5)
+    parser.add_argument("--logs_dir", default="./logs",
+                        help="日志目录")
+    parser.add_argument("--work_dir", default="./work_dir",
+                        help="work_dir 目录（备用日志位置）")
+    parser.add_argument("--models", default="segresnet,swinunetr",
+                        help="逗号分隔模型名")
+    parser.add_argument("--folds", default="0,1,2,3,4",
+                        help="逗号分隔 fold 编号")
+    parser.add_argument("--output", default="paper_figs/F4_training_curves.png",
+                        help="输出路径")
+    parser.add_argument("--smooth_loss", type=int, default=5,
+                        help="loss 曲线移动平均窗口（0=不平滑）")
     parser.add_argument("--dpi", type=int, default=200)
     parser.add_argument("--no_pdf", action="store_true")
-    parser.add_argument("--no_swa_marker", action="store_true")
+    parser.add_argument("--no_swa_marker", action="store_true",
+                        help="不画 SWA 起点竖线")
     args = parser.parse_args()
 
     logs_dir = Path(args.logs_dir)
@@ -188,7 +217,8 @@ def main():
     models = [m.strip() for m in args.models.split(",")]
     folds = [int(f) for f in args.folds.split(",")]
 
-    all_data = {}
+    # ===== 加载所有数据 =====
+    all_data = {}   # all_data[model] = [parsed_fold_0, parsed_fold_1, ...]
     for model in models:
         all_data[model] = []
         for fold in folds:
@@ -204,11 +234,13 @@ def main():
                   f"[{log}]")
             all_data[model].append(data)
 
+    # 检查是否有任何数据
     has_data = any(any(d is not None for d in folds_data)
                    for folds_data in all_data.values())
     if not has_data:
         sys.exit("✗ 没找到任何日志文件，请检查路径")
 
+    # ===== 画图 =====
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
     plt.subplots_adjust(hspace=0.30, wspace=0.25)
 
@@ -218,6 +250,7 @@ def main():
         ep, mu, sd = aggregate_folds(all_data[model], ["train", "loss"])
         if len(ep) == 0:
             continue
+        # 平滑
         if args.smooth_loss > 1 and len(mu) > args.smooth_loss:
             k = args.smooth_loss
             mu_s = np.convolve(mu, np.ones(k) / k, mode='valid')
@@ -243,6 +276,7 @@ def main():
         plot_curve(ax, ep, mu, sd, model,
                    MODEL_COLORS.get(model, "gray"))
 
+        # SWA marker
         if not args.no_swa_marker:
             swa_epochs = [d["swa"] for d in all_data[model]
                           if d and d["swa"]]
@@ -255,6 +289,7 @@ def main():
                         color=MODEL_COLORS.get(model, "gray"),
                         fontsize=8, rotation=90, va='bottom')
 
+        # Best marker
         bests = [d["best"] for d in all_data[model] if d and d["best"]]
         if bests:
             best_ep = int(np.mean([b[0] for b in bests]))
@@ -271,6 +306,7 @@ def main():
 
     # ----- [1,0] Per-region Dice -----
     ax = axes[1, 0]
+    region_legend = []
     for i, model in enumerate(models):
         for region in ["wt", "tc", "et"]:
             ep, mu, sd = aggregate_folds(all_data[model], ["val", region])
@@ -281,7 +317,7 @@ def main():
             ax.plot(ep, mu, color=color, linestyle=ls, linewidth=1.8,
                     label=f"{model}-{region.upper()}")
             if (sd > 0).any():
-                ax.fill_between(ep, mu - sd, mu + sd, color=color, alpha=0.12)
+                # ax.fill_between(ep, mu - sd, mu + sd, color=color, alpha=0.12)
 
     ax.set_xlabel("Epoch", fontsize=11)
     ax.set_ylabel("Validation Dice", fontsize=11)
@@ -305,12 +341,14 @@ def main():
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3)
 
+    # ===== 全局标题 =====
     n_folds_total = sum(1 for m in models for d in all_data[m] if d is not None)
     fig.suptitle(
         f"Training Curves  ({n_folds_total} runs across {len(models)} model(s))",
         fontsize=13, fontweight='bold', y=0.995
     )
 
+    # ===== 保存 =====
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_path, dpi=args.dpi, bbox_inches='tight',
@@ -323,6 +361,7 @@ def main():
                     facecolor='white')
         print(f"  PDF: {pdf_path}")
 
+    # ===== 输出摘要 =====
     print("\n=== 训练状态摘要 ===")
     for model in models:
         for fold, d in enumerate(all_data[model]):

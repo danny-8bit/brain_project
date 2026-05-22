@@ -53,7 +53,7 @@ total_size=0
 for ckpt in "$WORK_DIR"/*/fold_*/best.pt; do
     [[ -f "$ckpt" ]] || continue
     name=$(echo "$ckpt" | sed "s|$WORK_DIR/||; s|/best.pt||; s|/|_|g")
-    ln -sf "$(readlink -f "$ckpt")" "$SNAPSHOT_DIR/models/${name}_best.pt"
+    cp "$ckpt" "$SNAPSHOT_DIR/models/${name}_best.pt"
     sz=$(stat -c%s "$ckpt")
     total_size=$((total_size + sz))
     count=$((count+1))

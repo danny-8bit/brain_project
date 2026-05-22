@@ -31,3 +31,6 @@ __pycache__/
 # Results
 result/
 v0*/result/
+.backup/
+paper_figs/
+paper_data/
