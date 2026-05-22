@@ -63,7 +63,5 @@ def main():
 
     print(f"\nDone. {n} cases -> {dst}")
 
-
-
 if __name__ == "__main__":
     main()
