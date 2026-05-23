@@ -1,0 +1,43 @@
+# ==========================================
+# 脑部项目专属 Codex 忽略规则
+# ==========================================
+
+# 1. 屏蔽大型数据集和数据文件（防止把几十万行 CSV 喂给 AI）
+*.csv
+*.npz
+*.npy
+*.h5
+*.hd5
+paper_data_test/
+data/
+datasets/
+
+# 2. 屏蔽图片与可视化结果
+*.png
+*.jpg
+*.jpeg
+*.gif
+paper_figs/
+figures/
+
+# 3. 屏蔽所有的历史代码备份（你项目里有大量的 .bak_xxx 备份文件，非常占空间！）
+*.bak
+*.bak_*
+scripts/*.bak_*
+scripts/*.bak
+
+# 4. 屏蔽 Python 编译缓存和虚拟环境
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# 5. 屏蔽系统和 IDE 配置文件
+.vscode/
+.idea/
+.DS_Store
+*.log
