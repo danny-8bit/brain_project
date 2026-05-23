@@ -99,7 +99,11 @@ class Trainer:
         self.ema = EMA(self.model, decay=0.999) if cfg.get("ema", True) else None
 
         # Loss
-        base = DiceBCELoss(lambda_dice=1.0, lambda_bce=1.0)
+        base = DiceBCELoss(
+            lambda_dice=cfg.get("lambda_dice", 1.0),
+            lambda_bce=cfg.get("lambda_bce", 1.0),
+            channel_weights=cfg.get("loss_channel_weights", [1.0, 1.0, 1.0]),
+        )
         self.loss_fn = (
             DeepSupervisionLoss(base)
             if cfg.get("deep_supervision", True)

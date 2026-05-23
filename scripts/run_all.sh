@@ -235,10 +235,13 @@ ensemble_and_search() {
     for d in "${prob_dirs[@]}"; do log "    - $d"; done
 
     run_step "grid_search" \
-        python scripts/grid_search.py \
+        python scripts/grid_search_fast.py \
             --prob_dirs "${prob_dirs[@]}" \
             --ref_dir "$DATA_ROOT" \
-            --folds_json "$FOLDS_JSON"
+            --folds_json "$FOLDS_JSON" \
+            --out_dir "$WORK_DIR/grid_search" \
+            --n_jobs 14 \
+            --selection_metric mean
 }
 
 summary() {

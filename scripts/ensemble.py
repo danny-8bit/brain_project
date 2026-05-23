@@ -4,6 +4,7 @@
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -29,15 +30,30 @@ def main():
     parser.add_argument("--ref_dir", required=True,
                         help="原始数据目录，用于读取 affine/header 还原")
     parser.add_argument("--out_dir", required=True)
+    parser.add_argument("--config", default=None,
+                        help="grid_search best_config.json; overrides weights/thresholds/min_sizes")
+    parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--et_threshold_voxels", type=int, default=200)
     args = parser.parse_args()
 
+    cfg = json.loads(Path(args.config).read_text()) if args.config else {}
+
     prob_dirs = [Path(p) for p in args.prob_dirs]
-    if args.weights is None:
+    if cfg.get("weights"):
+        model_names = [d.name.replace("_oof", "") for d in prob_dirs]
+        weights = [cfg["weights"].get(name) for name in model_names]
+        if any(w is None for w in weights):
+            weights = list(cfg["weights"].values())
+    elif args.weights is None:
         weights = [1.0 / len(prob_dirs)] * len(prob_dirs)
     else:
-        s = sum(args.weights)
-        weights = [w / s for w in args.weights]
+        weights = args.weights
+    s = sum(weights)
+    weights = [w / s for w in weights]
+    thresholds = cfg.get("thresholds")
+    min_sizes = cfg.get("min_sizes")
+    et_threshold_voxels = cfg.get("et_threshold_voxels", args.et_threshold_voxels)
+    et_min_prob = cfg.get("et_min_prob", 0.5)
     print(f"Weights: {weights}")
 
     # 取第一个目录的 case 列表
@@ -67,8 +83,11 @@ def main():
         # 后处理
         label = postprocess_brats(
             fused,
-            threshold=0.5,
-            et_threshold_voxels=args.et_threshold_voxels,
+            threshold=args.threshold,
+            thresholds=thresholds,
+            min_sizes=min_sizes,
+            et_threshold_voxels=et_threshold_voxels,
+            et_min_prob=et_min_prob,
         )
 
         # 还原到原始空间：这里假设 predict 已经是原始空间

@@ -65,12 +65,13 @@ def postprocess_brats(
         et_keep = _remove_small_components(out == 4, min_sizes["et"])
         out = np.where((out == 4) & ~et_keep, 1, out).astype(np.uint8)
 
-    # WT 散点过滤：按 voxel 数量删除小组件 (保留多发肿瘤的所有真病灶)
-    # 默认 100 voxels (~ 0.5 cm³)，可通过 min_sizes["wt_component"] 覆盖
-    wt_comp_min = (min_sizes or {}).get("wt_component", 100)
-    if wt_comp_min > 0:
-        wt_keep = _remove_small_components(out > 0, wt_comp_min)
-        out = np.where(wt_keep, out, 0).astype(np.uint8)
+    # WT 最大连通域过滤（去除散点假阳性）
+    labeled, n = ndimage.label(out > 0)
+    if n > 1:
+        sizes = ndimage.sum(out > 0, labeled, range(1, n + 1))
+        max_label = int(np.argmax(sizes)) + 1
+        keep = labeled == max_label
+        out = np.where(keep, out, 0).astype(np.uint8)
 
     return out
 

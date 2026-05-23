@@ -1,30 +1,36 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from monai.losses import DiceLoss
 
 
 class DiceBCELoss(nn.Module):
     """Dice + BCE for region-based (multi-label sigmoid) seg."""
 
-    def __init__(self, lambda_dice=1.0, lambda_bce=1.0):
+    def __init__(self, lambda_dice=1.0, lambda_bce=1.0, channel_weights=None):
         super().__init__()
-        self.dice = DiceLoss(
-            sigmoid=True,
-            squared_pred=True,
-            smooth_nr=0.0,
-            smooth_dr=1e-5,
-            batch=True,
-        )
-        self.bce = nn.BCEWithLogitsLoss()
+        self.bce = nn.BCEWithLogitsLoss(reduction="none")
         self.lambda_dice = lambda_dice
         self.lambda_bce = lambda_bce
+        self.register_buffer(
+            "channel_weights",
+            torch.as_tensor(channel_weights or [1.0, 1.0, 1.0], dtype=torch.float32),
+        )
 
     def forward(self, pred, target):
-        return (
-            self.lambda_dice * self.dice(pred, target)
-            + self.lambda_bce * self.bce(pred, target)
-        )
+        weights = self.channel_weights.to(device=pred.device, dtype=pred.dtype)
+        weights = weights / weights.mean().clamp_min(1e-6)
+
+        probs = torch.sigmoid(pred)
+        reduce_dims = (0,) + tuple(range(2, pred.ndim))
+        intersection = (probs * target).sum(dim=reduce_dims)
+        denominator = (probs.square() + target.square()).sum(dim=reduce_dims)
+        dice_loss = 1.0 - (2.0 * intersection) / denominator.clamp_min(1e-5)
+        dice_loss = (dice_loss * weights).mean()
+
+        bce_loss = self.bce(pred, target).mean(dim=reduce_dims)
+        bce_loss = (bce_loss * weights).mean()
+
+        return self.lambda_dice * dice_loss + self.lambda_bce * bce_loss
 
 
 class DeepSupervisionLoss(nn.Module):

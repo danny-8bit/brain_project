@@ -23,6 +23,12 @@ val_interval: 15
 lr: 3.0e-4
 weight_decay: 1.0e-5
 
+# Loss weights for [TC, WT, ET]. Keep ET at 1.0 for baseline; try [1.0, 1.0, 1.15]
+# only when re-training and validate that dice_mean does not regress.
+loss_channel_weights: [1.0, 1.0, 1.0]
+lambda_dice: 1.0
+lambda_bce: 1.0
+
 # SWA (最后 25% = 50 epoch 做平均)
 use_swa: true
 swa_start_ratio: 0.73
