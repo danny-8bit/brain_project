@@ -92,6 +92,9 @@ class Trainer:
             )},
         ).to(self.device)
 
+        if cfg.get("ssl_pretrained") and cfg["model"].lower() == "swinunetr":
+            self._load_ssl_pretrained(cfg["ssl_pretrained"])
+
         n_params = sum(p.numel() for p in self.model.parameters()) / 1e6
         self.logger.info(f"Model: {cfg['model']}, params: {n_params:.2f}M")
 
@@ -147,6 +150,43 @@ class Trainer:
 
         if self.cfg.get("resume"):
             self._load_ckpt(self.cfg["resume"])
+
+    def _load_ssl_pretrained(self, path):
+        ckpt_path = Path(path)
+        if not ckpt_path.exists():
+            self.logger.warning(f"ssl_pretrained not found: {ckpt_path}")
+            return
+
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        if isinstance(ckpt, dict):
+            state = ckpt.get("state_dict", ckpt.get("model", ckpt))
+        else:
+            state = ckpt
+
+        # Strip common prefixes to improve matching.
+        cleaned = {}
+        for k, v in state.items():
+            nk = k[7:] if k.startswith("module.") else k
+            cleaned[nk] = v
+
+        if hasattr(self.model, "load_from"):
+            try:
+                self.model.load_from(cleaned)
+                self.logger.info(f"Loaded ssl_pretrained via load_from: {ckpt_path}")
+                return
+            except Exception as exc:
+                self.logger.warning(f"load_from failed, fallback to state_dict: {exc}")
+
+        model_state = self.model.state_dict()
+        matched = {
+            k: v for k, v in cleaned.items()
+            if k in model_state and hasattr(v, "shape") and v.shape == model_state[k].shape
+        }
+        incompatible = self.model.load_state_dict(matched, strict=False)
+        self.logger.info(
+            f"Loaded ssl_pretrained with {len(matched)} keys; "
+            f"missing={len(incompatible.missing_keys)} unexpected={len(incompatible.unexpected_keys)}"
+        )
 
     # -------- train --------
     def train_one_epoch(self, epoch):
