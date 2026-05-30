@@ -1,0 +1,10 @@
+model: unetr
+feature_size: 16
+hidden_size: 384
+mlp_dim: 1536
+num_heads: 6
+pos_embed: perceptron
+dropout: 0.0
+lr: 1.0e-4
+batch_size: 1
+roi_size: [128, 128, 128]

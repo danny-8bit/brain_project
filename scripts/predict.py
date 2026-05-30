@@ -69,12 +69,26 @@ def main():
     )
 
     # 模型
+    model_kwargs = {k: v for k, v in cfg.items() if k in (
+        "init_filters",
+        "dropout",
+        "feature_size",
+        "use_checkpoint",
+        "num_res_units",
+        "hidden_size",
+        "mlp_dim",
+        "num_heads",
+        "pos_embed",
+        "deepmedic_filters",
+        "transformer_layers",
+        "mlp_ratio",
+    )}
+    model_kwargs.update(cfg.get("model_kwargs", {}))
+
     model = build_model(
         cfg["model"], in_channels=4, out_channels=3,
         roi_size=cfg["roi_size"],
-        **{k: v for k, v in cfg.items() if k in (
-            "init_filters", "dropout", "feature_size", "use_checkpoint"
-        )},
+        **model_kwargs,
     ).to(device)
 
     state = torch.load(args.ckpt, map_location=device)

@@ -1,0 +1,36 @@
+# Shortened training schedule for baseline comparisons
+seed: 2024
+gpu: 0
+amp: true
+deep_supervision: true
+ema: true
+ema_decay: 0.999
+grad_clip: 1.0
+
+# Data
+data_root: ./data/BraTS2021_TrainingData
+folds_json: ./data/folds.json
+num_folds: 5
+num_workers: 8
+cache_rate: 0.3
+
+# Train
+roi_size: [128, 128, 128]
+batch_size: 2
+sw_batch_size: 4
+max_epochs: 50
+warmup_epochs: 5
+val_interval: 10
+lr: 3.0e-4
+weight_decay: 1.0e-5
+
+loss_channel_weights: [1.0, 1.0, 1.0]
+lambda_dice: 1.0
+lambda_bce: 1.0
+
+use_swa: false
+save_last: false
+save_swa_to_shm: true
+probs_dir: /dev/shm/brats_probs
+
+work_dir: ./work_dir

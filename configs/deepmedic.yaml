@@ -1,0 +1,5 @@
+model: deepmedic
+deepmedic_filters: 24
+lr: 3.0e-4
+batch_size: 2
+roi_size: [128, 128, 128]

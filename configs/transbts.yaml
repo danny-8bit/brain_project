@@ -1,0 +1,9 @@
+model: transbts
+init_filters: 16
+num_heads: 4
+transformer_layers: 2
+mlp_ratio: 2
+dropout: 0.0
+lr: 1.0e-4
+batch_size: 1
+roi_size: [128, 128, 128]

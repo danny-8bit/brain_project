@@ -1,0 +1,7 @@
+model: resunet
+init_filters: 32
+num_res_units: 2
+dropout: 0.0
+lr: 3.0e-4
+batch_size: 2
+roi_size: [128, 128, 128]
